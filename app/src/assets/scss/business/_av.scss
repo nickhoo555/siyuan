@@ -3,6 +3,7 @@
   box-sizing: border-box;
   display: flex;
   max-width: 100%;
+  margin: 4px 0 !important;
 
   &:hover .av__views .block__icon {
     opacity: 1;
@@ -14,7 +15,8 @@
   }
 
   &__container {
-    overflow: auto;
+    overflow-x: auto;
+    overflow-y: hidden;
     cursor: auto;
   }
 
@@ -87,7 +89,7 @@
     font-weight: bold;
 
     &:empty::after {
-      color: var(--b3-theme-on-surface);
+      color: var(--b3-theme-on-surface-light);
       content: attr(data-tip);
     }
   }
@@ -270,8 +272,8 @@
       display: none;
       position: absolute;
       right: 5px;
-      font-size: 85%;
-      top: 5.5px;
+      font-size: 85% !important;
+      top: 7.5px;
     }
 
     .popover__block {
@@ -336,6 +338,7 @@
         margin: 0 5px 0 0;
         flex-shrink: 0;
         font-size: inherit;
+        font-family: var(--b3-font-family-emoji);
 
         &--pin {
           margin: 0 0 0 5px;
@@ -490,6 +493,7 @@
         line-height: 20px;
         padding: 0 4px;
         font-size: 12px;
+        font-family: var(--b3-font-family-emoji);
         align-self: center;
         opacity: 1;
       }
@@ -515,7 +519,7 @@
         opacity: 1;
       }
 
-      &__item[data-type="nobg"] .b3-menu__label {
+      &__item[data-type="nobg"] {
         cursor: auto;
       }
 

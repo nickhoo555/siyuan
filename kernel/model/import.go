@@ -27,18 +27,16 @@ import (
 	"image/png"
 	"io"
 	"io/fs"
-	"math/rand"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
 	"runtime/debug"
 	"sort"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/88250/gulu"
+	"github.com/88250/lute"
 	"github.com/88250/lute/ast"
 	"github.com/88250/lute/html"
 	"github.com/88250/lute/html/atom"
@@ -54,13 +52,19 @@ import (
 	"github.com/siyuan-note/siyuan/kernel/util"
 )
 
-func HTML2Markdown(htmlStr string) (markdown string, withMath bool, err error) {
+func HTML2Markdown(htmlStr string, luteEngine *lute.Lute) (markdown string, withMath bool, err error) {
 	assetDirPath := filepath.Join(util.DataDir, "assets")
-	luteEngine := util.NewLute()
 	tree := luteEngine.HTML2Tree(htmlStr)
 	ast.Walk(tree.Root, func(n *ast.Node, entering bool) ast.WalkStatus {
 		if !entering {
 			return ast.WalkContinue
+		}
+
+		if ast.NodeText == n.Type {
+			if n.ParentIs(ast.NodeTableCell) {
+				n.Tokens = bytes.ReplaceAll(n.Tokens, []byte("\\|"), []byte("|"))
+				n.Tokens = bytes.ReplaceAll(n.Tokens, []byte("|"), []byte("\\|"))
+			}
 		}
 
 		if ast.NodeInlineMath == n.Type {
@@ -102,14 +106,14 @@ func ImportSY(zipPath, boxID, toPath string) (err error) {
 	baseName = strings.TrimSuffix(baseName, ext)
 	unzipPath := filepath.Join(filepath.Dir(zipPath), baseName+"-"+gulu.Rand.String(7))
 	err = gulu.Zip.Unzip(zipPath, unzipPath)
-	if nil != err {
+	if err != nil {
 		return
 	}
 	defer os.RemoveAll(unzipPath)
 
 	var syPaths []string
 	filelock.Walk(unzipPath, func(path string, info fs.FileInfo, err error) error {
-		if nil != err {
+		if err != nil {
 			return err
 		}
 
@@ -120,7 +124,7 @@ func ImportSY(zipPath, boxID, toPath string) (err error) {
 	})
 
 	entries, err := os.ReadDir(unzipPath)
-	if nil != err {
+	if err != nil {
 		logging.LogErrorf("read unzip dir [%s] failed: %s", unzipPath, err)
 		return
 	}
@@ -137,11 +141,10 @@ func ImportSY(zipPath, boxID, toPath string) (err error) {
 
 	luteEngine := util.NewLute()
 	blockIDs := map[string]string{}
-	avBlockIDs := map[string]string{}
 	trees := map[string]*parse.Tree{}
 
 	// 重新生成块 ID
-	for _, syPath := range syPaths {
+	for i, syPath := range syPaths {
 		data, readErr := os.ReadFile(syPath)
 		if nil != readErr {
 			logging.LogErrorf("read .sy [%s] failed: %s", syPath, readErr)
@@ -163,28 +166,19 @@ func ImportSY(zipPath, boxID, toPath string) (err error) {
 			// Keep original creation time when importing .sy.zip https://github.com/siyuan-note/siyuan/issues/9923
 			newNodeID := util.TimeFromID(n.ID) + "-" + util.RandString(7)
 			blockIDs[n.ID] = newNodeID
-			oldNodeID := n.ID
 			n.ID = newNodeID
 			n.SetIALAttr("id", newNodeID)
-
-			// 重新指向数据库属性值
-			for _, kv := range n.KramdownIAL {
-				if 2 > len(kv) {
-					continue
-				}
-				if strings.HasPrefix(kv[0], av.NodeAttrNameAvs) {
-					avBlockIDs[oldNodeID] = newNodeID
-				}
-			}
 			return ast.WalkContinue
 		})
 		tree.ID = tree.Root.ID
 		tree.Path = filepath.ToSlash(strings.TrimPrefix(syPath, unzipRootPath))
 		trees[tree.ID] = tree
+		util.PushEndlessProgress(Conf.language(73) + " " + fmt.Sprintf(Conf.language(70), fmt.Sprintf("%d/%d", i+1, len(syPaths))))
 	}
 
 	// 引用和嵌入指向重新生成的块 ID
 	for _, tree := range trees {
+		util.PushEndlessProgress(Conf.language(73) + " " + fmt.Sprintf(Conf.language(70), tree.Root.IALAttr("title")))
 		ast.Walk(tree.Root, func(n *ast.Node, entering bool) ast.WalkStatus {
 			if !entering {
 				return ast.WalkContinue
@@ -212,6 +206,12 @@ func ImportSY(zipPath, boxID, toPath string) (err error) {
 			return ast.WalkContinue
 		})
 	}
+
+	var replacements []string
+	for oldID, newID := range blockIDs {
+		replacements = append(replacements, oldID, newID)
+	}
+	blockIDReplacer := strings.NewReplacer(replacements...)
 
 	// 将关联的数据库文件移动到 data/storage/av/ 下
 	storage := filepath.Join(unzipRootPath, "storage")
@@ -242,14 +242,12 @@ func ImportSY(zipPath, boxID, toPath string) (err error) {
 				return nil
 			}
 
-			// 将数据库文件中的块 ID 替换为新的块 ID
+			// 将数据库文件中的 ID 替换为新的 ID
 			newData := data
 			for oldAvID, newAvID := range avIDs {
-				for oldID, newID := range avBlockIDs {
-					newData = bytes.ReplaceAll(newData, []byte(oldID), []byte(newID))
-				}
 				newData = bytes.ReplaceAll(newData, []byte(oldAvID), []byte(newAvID))
 			}
+			newData = []byte(blockIDReplacer.Replace(string(newData)))
 			if !bytes.Equal(data, newData) {
 				if writeErr := os.WriteFile(oldPath, newData, 0644); nil != writeErr {
 					logging.LogErrorf("write av file [%s] failed: %s", oldPath, writeErr)
@@ -257,7 +255,7 @@ func ImportSY(zipPath, boxID, toPath string) (err error) {
 				}
 			}
 
-			if err = os.Rename(oldPath, newPath); nil != err {
+			if err = os.Rename(oldPath, newPath); err != nil {
 				logging.LogErrorf("rename av file from [%s] to [%s] failed: %s", oldPath, newPath, err)
 				return
 			}
@@ -270,6 +268,7 @@ func ImportSY(zipPath, boxID, toPath string) (err error) {
 
 		// 重新指向数据库属性值
 		for _, tree := range trees {
+			util.PushEndlessProgress(Conf.language(73) + " " + fmt.Sprintf(Conf.language(70), tree.Root.IALAttr("title")))
 			ast.Walk(tree.Root, func(n *ast.Node, entering bool) ast.WalkStatus {
 				if !entering || "" == n.ID {
 					return ast.WalkContinue
@@ -305,6 +304,25 @@ func ImportSY(zipPath, boxID, toPath string) (err error) {
 			attrViewIDs = append(attrViewIDs, avID)
 		}
 		updateBoundBlockAvsAttribute(attrViewIDs)
+
+		// 插入关联关系 https://github.com/siyuan-note/siyuan/issues/11628
+		relationAvs := map[string]string{}
+		for _, avID := range avIDs {
+			attrView, _ := av.ParseAttributeView(avID)
+			if nil == attrView {
+				continue
+			}
+
+			for _, keyValues := range attrView.KeyValues {
+				if nil != keyValues.Key && av.KeyTypeRelation == keyValues.Key.Type && nil != keyValues.Key.Relation {
+					relationAvs[avID] = keyValues.Key.Relation.AvID
+				}
+			}
+		}
+
+		for srcAvID, destAvID := range relationAvs {
+			av.UpsertAvBackRel(srcAvID, destAvID)
+		}
 	}
 
 	// 将关联的闪卡数据合并到默认卡包 data/storage/riff/20230218211946-2kw8jgx 中
@@ -342,8 +360,28 @@ func ImportSY(zipPath, boxID, toPath string) (err error) {
 		logging.LogErrorf("remove temp storage av dir failed: %s", removeErr)
 	}
 
+	// 清理一些冗余的数据
+	avDir := filepath.Join(util.DataDir, "storage", "av")
+	for _, tree := range trees {
+		ast.Walk(tree.Root, func(n *ast.Node, entering bool) ast.WalkStatus {
+			if !entering {
+				return ast.WalkContinue
+			}
+
+			ial := parse.IAL2Map(n.KramdownIAL)
+			avIDs := strings.Split(ial[av.NodeAttrNameAvs], ",")
+			for _, avID := range avIDs {
+				if !filelock.IsExist(filepath.Join(avDir, avID+".json")) {
+					n.RemoveIALAttr(av.NodeAttrNameAvs)
+				}
+			}
+			return ast.WalkContinue
+		})
+	}
+
 	// 写回 .sy
 	for _, tree := range trees {
+		util.PushEndlessProgress(Conf.language(73) + " " + fmt.Sprintf(Conf.language(70), tree.Root.IALAttr("title")))
 		syPath := filepath.Join(unzipRootPath, tree.Path)
 		if "" == tree.Root.Spec {
 			parse.NestedInlines2FlattedSpans(tree, false)
@@ -355,18 +393,18 @@ func ImportSY(zipPath, boxID, toPath string) (err error) {
 		if !util.UseSingleLineSave {
 			buf := bytes.Buffer{}
 			buf.Grow(1024 * 1024 * 2)
-			if err = json.Indent(&buf, data, "", "\t"); nil != err {
+			if err = json.Indent(&buf, data, "", "\t"); err != nil {
 				return
 			}
 			data = buf.Bytes()
 		}
 
-		if err = os.WriteFile(syPath, data, 0644); nil != err {
+		if err = os.WriteFile(syPath, data, 0644); err != nil {
 			logging.LogErrorf("write .sy [%s] failed: %s", syPath, err)
 			return
 		}
 		newSyPath := filepath.Join(filepath.Dir(syPath), tree.ID+".sy")
-		if err = filelock.Rename(syPath, newSyPath); nil != err {
+		if err = filelock.Rename(syPath, newSyPath); err != nil {
 			logging.LogErrorf("rename .sy from [%s] to [%s] failed: %s", syPath, newSyPath, err)
 			return
 		}
@@ -423,7 +461,7 @@ func ImportSY(zipPath, boxID, toPath string) (err error) {
 	// 重命名文件路径
 	renamePaths := map[string]string{}
 	filelock.Walk(unzipRootPath, func(path string, info fs.FileInfo, err error) error {
-		if nil != err {
+		if err != nil {
 			return err
 		}
 
@@ -466,7 +504,7 @@ func ImportSY(zipPath, boxID, toPath string) (err error) {
 	})
 	for i, oldPath := range oldPaths {
 		newPath := renamePaths[oldPath]
-		if err = filelock.Rename(oldPath, newPath); nil != err {
+		if err = filelock.Rename(oldPath, newPath); err != nil {
 			logging.LogErrorf("rename path from [%s] to [%s] failed: %s", oldPath, renamePaths[oldPath], err)
 			return errors.New("rename path failed")
 		}
@@ -506,7 +544,7 @@ func ImportSY(zipPath, boxID, toPath string) (err error) {
 	dataAssets := filepath.Join(util.DataDir, "assets")
 	for _, assets := range assetsDirs {
 		if gulu.File.IsDir(assets) {
-			if err = filelock.Copy(assets, dataAssets); nil != err {
+			if err = filelock.Copy(assets, dataAssets); err != nil {
 				logging.LogErrorf("copy assets from [%s] to [%s] failed: %s", assets, dataAssets, err)
 				return
 			}
@@ -527,7 +565,7 @@ func ImportSY(zipPath, boxID, toPath string) (err error) {
 	}
 
 	targetDir := filepath.Join(util.DataDir, boxID, baseTargetPath)
-	if err = os.MkdirAll(targetDir, 0755); nil != err {
+	if err = os.MkdirAll(targetDir, 0755); err != nil {
 		return
 	}
 
@@ -550,7 +588,7 @@ func ImportSY(zipPath, boxID, toPath string) (err error) {
 		return nil
 	})
 
-	if err = filelock.Copy(unzipRootPath, targetDir); nil != err {
+	if err = filelock.Copy(unzipRootPath, targetDir); err != nil {
 		logging.LogErrorf("copy data dir from [%s] to [%s] failed: %s", unzipRootPath, util.DataDir, err)
 		err = errors.New("copy data failed")
 		return
@@ -562,13 +600,14 @@ func ImportSY(zipPath, boxID, toPath string) (err error) {
 		p := strings.TrimPrefix(absPath, boxAbsPath)
 		p = filepath.ToSlash(p)
 		tree, err := filesys.LoadTree(boxID, p, luteEngine)
-		if nil != err {
+		if err != nil {
 			logging.LogErrorf("load tree [%s] failed: %s", treePath, err)
 			continue
 		}
 
 		treenode.IndexBlockTree(tree)
 		sql.IndexTreeQueue(tree)
+		util.PushEndlessProgress(Conf.language(73) + " " + fmt.Sprintf(Conf.language(70), tree.Root.IALAttr("title")))
 	}
 
 	IncSync()
@@ -587,13 +626,13 @@ func ImportData(zipPath string) (err error) {
 	baseName = strings.TrimSuffix(baseName, ext)
 	unzipPath := filepath.Join(filepath.Dir(zipPath), baseName)
 	err = gulu.Zip.Unzip(zipPath, unzipPath)
-	if nil != err {
+	if err != nil {
 		return
 	}
 	defer os.RemoveAll(unzipPath)
 
 	files, err := filepath.Glob(filepath.Join(unzipPath, "*/*.sy"))
-	if nil != err {
+	if err != nil {
 		logging.LogErrorf("check data.zip failed: %s", err)
 		return errors.New("check data.zip failed")
 	}
@@ -601,7 +640,7 @@ func ImportData(zipPath string) (err error) {
 		return errors.New(Conf.Language(198))
 	}
 	dirs, err := os.ReadDir(unzipPath)
-	if nil != err {
+	if err != nil {
 		logging.LogErrorf("check data.zip failed: %s", err)
 		return errors.New("check data.zip failed")
 	}
@@ -610,7 +649,7 @@ func ImportData(zipPath string) (err error) {
 	}
 
 	tmpDataPath := filepath.Join(unzipPath, dirs[0].Name())
-	if err = filelock.Copy(tmpDataPath, util.DataDir); nil != err {
+	if err = filelock.Copy(tmpDataPath, util.DataDir); err != nil {
 		logging.LogErrorf("copy data dir from [%s] to [%s] failed: %s", tmpDataPath, util.DataDir, err)
 		err = errors.New("copy data failed")
 		return
@@ -637,7 +676,7 @@ func ImportFromLocalPath(boxID, localPath string, toPath string) (err error) {
 	lockSync()
 	defer unlockSync()
 
-	WaitForWritingFiles()
+	FlushTxQueue()
 
 	var baseHPath, baseTargetPath, boxLocalPath string
 	if "/" == toPath {
@@ -654,7 +693,10 @@ func ImportFromLocalPath(boxID, localPath string, toPath string) (err error) {
 	}
 	boxLocalPath = filepath.Join(util.DataDir, boxID)
 
-	if gulu.File.IsDir(localPath) {
+	hPathsIDs := map[string]string{}
+	idPaths := map[string]string{}
+
+	if gulu.File.IsDir(localPath) { // 导入文件夹
 		// 收集所有资源文件
 		assets := map[string]string{}
 		filelock.Walk(localPath, func(currentPath string, info os.FileInfo, walkErr error) error {
@@ -713,6 +755,11 @@ func ImportFromLocalPath(boxID, localPath string, toPath string) (err error) {
 			targetPaths[curRelPath] = targetPath
 
 			if info.IsDir() {
+				if subMdFiles := util.GetFilePathsByExts(currentPath, []string{".md", ".markdown"}); 1 > len(subMdFiles) {
+					// 如果该文件夹中不包含 Markdown 文件则不处理 https://github.com/siyuan-note/siyuan/issues/11567
+					return nil
+				}
+
 				tree = treenode.NewTree(boxID, targetPath, hPath, title)
 				importTrees = append(importTrees, tree)
 				return nil
@@ -728,11 +775,22 @@ func ImportFromLocalPath(boxID, localPath string, toPath string) (err error) {
 				return io.EOF
 			}
 
-			tree = parseStdMd(data)
+			tree, yfmRootID, yfmTitle, yfmUpdated := parseStdMd(data)
 			if nil == tree {
 				logging.LogErrorf("parse tree [%s] failed", currentPath)
 				return nil
 			}
+
+			if "" != yfmRootID {
+				id = yfmRootID
+			}
+			if "" != yfmTitle {
+				title = yfmTitle
+			}
+			updated := yfmUpdated
+			fname := path.Base(targetPath)
+			targetPath = strings.ReplaceAll(targetPath, fname, id+".sy")
+			targetPaths[curRelPath] = targetPath
 
 			tree.ID = id
 			tree.Root.ID = id
@@ -793,7 +851,7 @@ func ImportFromLocalPath(boxID, localPath string, toPath string) (err error) {
 						name = filepath.Base(fullPath)
 						name = util.AssetName(name)
 						assetTargetPath := filepath.Join(assetDirPath, name)
-						if err = filelock.Copy(fullPath, assetTargetPath); nil != err {
+						if err = filelock.Copy(fullPath, assetTargetPath); err != nil {
 							logging.LogErrorf("copy asset from [%s] to [%s] failed: %s", fullPath, assetTargetPath, err)
 							return ast.WalkContinue
 						}
@@ -810,8 +868,11 @@ func ImportFromLocalPath(boxID, localPath string, toPath string) (err error) {
 				return ast.WalkContinue
 			})
 
-			reassignIDUpdated(tree)
+			reassignIDUpdated(tree, id, updated)
 			importTrees = append(importTrees, tree)
+
+			hPathsIDs[tree.HPath] = tree.ID
+			idPaths[tree.ID] = tree.Path
 			return nil
 		})
 	} else { // 导入单个文件
@@ -827,15 +888,25 @@ func ImportFromLocalPath(boxID, localPath string, toPath string) (err error) {
 		targetPath = path.Join(targetPath, id+".sy")
 		var data []byte
 		data, err = os.ReadFile(localPath)
-		if nil != err {
+		if err != nil {
 			return err
 		}
-		tree := parseStdMd(data)
+		tree, yfmRootID, yfmTitle, yfmUpdated := parseStdMd(data)
 		if nil == tree {
 			msg := fmt.Sprintf("parse tree [%s] failed", localPath)
 			logging.LogErrorf(msg)
 			return errors.New(msg)
 		}
+
+		if "" != yfmRootID {
+			id = yfmRootID
+		}
+		if "" != yfmTitle {
+			title = yfmTitle
+		}
+		updated := yfmUpdated
+		fname := path.Base(targetPath)
+		targetPath = strings.ReplaceAll(targetPath, fname, id+".sy")
 
 		tree.ID = id
 		tree.Root.ID = id
@@ -890,7 +961,7 @@ func ImportFromLocalPath(boxID, localPath string, toPath string) (err error) {
 				name := filepath.Base(absolutePath)
 				name = util.AssetName(name)
 				assetTargetPath := filepath.Join(assetDirPath, name)
-				if err = filelock.Copy(absolutePath, assetTargetPath); nil != err {
+				if err = filelock.Copy(absolutePath, assetTargetPath); err != nil {
 					logging.LogErrorf("copy asset from [%s] to [%s] failed: %s", absolutePath, assetTargetPath, err)
 					return ast.WalkContinue
 				}
@@ -903,7 +974,7 @@ func ImportFromLocalPath(boxID, localPath string, toPath string) (err error) {
 			return ast.WalkContinue
 		})
 
-		reassignIDUpdated(tree)
+		reassignIDUpdated(tree, id, updated)
 		importTrees = append(importTrees, tree)
 	}
 
@@ -922,6 +993,17 @@ func ImportFromLocalPath(boxID, localPath string, toPath string) (err error) {
 
 		importTrees = []*parse.Tree{}
 		searchLinks = map[string]string{}
+
+		// 按照路径排序 Improve sort when importing markdown files https://github.com/siyuan-note/siyuan/issues/11390
+		var paths, hPaths []string
+		for hPath := range hPathsIDs {
+			hPaths = append(hPaths, hPath)
+		}
+		sort.Strings(hPaths)
+		for _, hPath := range hPaths {
+			paths = append(paths, idPaths[hPathsIDs[hPath]])
+		}
+		ChangeFileTreeSort(boxID, paths)
 	}
 
 	IncSync()
@@ -929,13 +1011,14 @@ func ImportFromLocalPath(boxID, localPath string, toPath string) (err error) {
 	return
 }
 
-func parseStdMd(markdown []byte) (ret *parse.Tree) {
+func parseStdMd(markdown []byte) (ret *parse.Tree, yfmRootID, yfmTitle, yfmUpdated string) {
 	luteEngine := util.NewStdLute()
+	luteEngine.SetYamlFrontMatter(true) // 解析 YAML Front Matter https://github.com/siyuan-note/siyuan/issues/10878
 	ret = parse.Parse("", markdown, luteEngine.ParseOptions)
 	if nil == ret {
 		return
 	}
-	genTreeID(ret)
+	yfmRootID, yfmTitle, yfmUpdated = normalizeTree(ret)
 	imgHtmlBlock2InlineImg(ret)
 	parse.NestedInlines2FlattedSpansHybrid(ret, false)
 	return
@@ -1005,7 +1088,7 @@ func processBase64Img(n *ast.Node, dest string, assetDirPath string, err error) 
 	tmpFile.Close()
 
 	assetTargetPath := filepath.Join(assetDirPath, name)
-	if err = filelock.Copy(tmp, assetTargetPath); nil != err {
+	if err = filelock.Copy(tmp, assetTargetPath); err != nil {
 		logging.LogErrorf("copy asset from [%s] to [%s] failed: %s", tmp, assetTargetPath, err)
 		return
 	}
@@ -1020,7 +1103,16 @@ func imgHtmlBlock2InlineImg(tree *parse.Tree) {
 		}
 
 		if ast.NodeHTMLBlock == n.Type {
-			htmlNodes, pErr := html.ParseFragment(bytes.NewReader(n.Tokens), &html.Node{Type: html.ElementNode})
+			tokens := bytes.TrimSpace(n.Tokens)
+			if bytes.HasPrefix(tokens, []byte("<div>")) {
+				tokens = bytes.TrimPrefix(tokens, []byte("<div>"))
+			}
+			if bytes.HasSuffix(tokens, []byte("</div>")) {
+				tokens = bytes.TrimSuffix(tokens, []byte("</div>"))
+			}
+			tokens = bytes.TrimSpace(tokens)
+
+			htmlNodes, pErr := html.ParseFragment(bytes.NewReader(tokens), &html.Node{Type: html.ElementNode})
 			if nil != pErr {
 				logging.LogErrorf("parse html block [%s] failed: %s", n.Tokens, pErr)
 				return ast.WalkContinue
@@ -1065,7 +1157,7 @@ func imgHtmlBlock2InlineImg(tree *parse.Tree) {
 	return
 }
 
-func reassignIDUpdated(tree *parse.Tree) {
+func reassignIDUpdated(tree *parse.Tree, rootID, updated string) {
 	var blockCount int
 	ast.Walk(tree.Root, func(n *ast.Node, entering bool) ast.WalkStatus {
 		if !entering || "" == n.ID {
@@ -1076,41 +1168,29 @@ func reassignIDUpdated(tree *parse.Tree) {
 		return ast.WalkContinue
 	})
 
-	ids := make([]string, blockCount)
-	min, _ := strconv.ParseInt(time.Now().Add(-1*time.Duration(blockCount)*time.Second).Format("20060102150405"), 10, 64)
-	for i := 0; i < blockCount; i++ {
-		ids[i] = newID(fmt.Sprintf("%d", min))
-		min++
-	}
-
-	var i int
 	ast.Walk(tree.Root, func(n *ast.Node, entering bool) ast.WalkStatus {
 		if !entering || "" == n.ID {
 			return ast.WalkContinue
 		}
 
-		n.ID = ids[i]
+		n.ID = ast.NewNodeID()
+		if ast.NodeDocument == n.Type && "" != rootID {
+			n.ID = rootID
+		}
+
 		n.SetIALAttr("id", n.ID)
-		n.SetIALAttr("updated", util.TimeFromID(n.ID))
-		i++
+		if "" != updated {
+			n.SetIALAttr("updated", updated)
+			n.ID = updated + "-" + gulu.Rand.String(7)
+			n.SetIALAttr("id", n.ID)
+		} else {
+			n.SetIALAttr("updated", util.TimeFromID(n.ID))
+		}
 		return ast.WalkContinue
 	})
 	tree.ID = tree.Root.ID
 	tree.Path = path.Join(path.Dir(tree.Path), tree.ID+".sy")
 	tree.Root.SetIALAttr("id", tree.Root.ID)
-}
-
-func newID(t string) string {
-	return t + "-" + randStr(7)
-}
-
-func randStr(length int) string {
-	letter := []rune("abcdefghijklmnopqrstuvwxyz0123456789")
-	b := make([]rune, length)
-	for i := range b {
-		b[i] = letter[rand.Intn(len(letter))]
-	}
-	return string(b)
 }
 
 func domAttrValue(n *html.Node, attrName string) string {

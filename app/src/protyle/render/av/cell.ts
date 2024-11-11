@@ -15,6 +15,7 @@ import {hintRef} from "../../hint/extend";
 import {pathPosix} from "../../../util/pathName";
 import {mergeAddOption} from "./select";
 import {escapeAttr} from "../../../util/escape";
+import {electronUndo} from "../../undo";
 
 const renderCellURL = (urlContent: string) => {
     let host = urlContent;
@@ -169,17 +170,42 @@ export const genCellValue = (colType: TAVCol, value: string | any) => {
                 }
             };
         } else if (colType === "date") {
-            cellValue = {
-                type: colType,
-                date: {
-                    content: null,
-                    isNotEmpty: false,
-                    content2: null,
-                    isNotEmpty2: false,
-                    hasEndDate: false,
-                    isNotTime: true,
+            let values = value.split("→");
+            if (values.length !== 2) {
+                values = value.split("-");
+                if (values.length !== 2) {
+                    values = value.split("~");
                 }
-            };
+            }
+            const dateObj1 = dayjs(values[0]);
+            const dateObj2 = dayjs(values[1] || "");
+            if (isNaN(dateObj1.valueOf())) {
+                cellValue = {
+                    type: colType,
+                    date: {
+                        content: null,
+                        isNotEmpty: false,
+                        content2: null,
+                        isNotEmpty2: false,
+                        formattedContent: "",
+                        hasEndDate: false,
+                        isNotTime: true,
+                    }
+                };
+            } else {
+                cellValue = {
+                    type: colType,
+                    date: {
+                        content: dateObj1.valueOf(),
+                        isNotEmpty: true,
+                        content2: dateObj2.valueOf() || 0,
+                        isNotEmpty2: !isNaN(dateObj2.valueOf()),
+                        hasEndDate: !isNaN(dateObj2.valueOf()),
+                        isNotTime: dateObj1.hour() === 0,
+                        formattedContent: "",
+                    }
+                };
+            }
         } else if (colType === "relation") {
             cellValue = {
                 type: colType,
@@ -267,9 +293,11 @@ export const cellScrollIntoView = (blockElement: HTMLElement, cellElement: Eleme
                 if (rowElement) {
                     const stickyElement = rowElement.querySelector(".av__colsticky");
                     if (stickyElement) {
-                        const stickyRight = stickyElement.getBoundingClientRect().right;
-                        if (stickyRight > cellRect.left) {
-                            avScrollElement.scrollLeft = avScrollElement.scrollLeft + cellRect.left - stickyRight;
+                        if (!stickyElement.contains(cellElement)) { // https://github.com/siyuan-note/siyuan/issues/12162
+                            const stickyRight = stickyElement.getBoundingClientRect().right;
+                            if (stickyRight > cellRect.left) {
+                                avScrollElement.scrollLeft = avScrollElement.scrollLeft + cellRect.left - stickyRight;
+                            }
                         }
                     } else if (avScrollRect.left > cellRect.left) {
                         avScrollElement.scrollLeft = avScrollElement.scrollLeft + cellRect.left - avScrollRect.left;
@@ -278,6 +306,19 @@ export const cellScrollIntoView = (blockElement: HTMLElement, cellElement: Eleme
             }
         }
     }
+    /// #if MOBILE
+    const contentElement = hasClosestByClassName(blockElement, "protyle-content", true);
+    if (contentElement && cellElement.getAttribute("data-dtype") !== "checkbox") {
+        const keyboardToolbarElement = document.getElementById("keyboardToolbar");
+        const keyboardH = parseInt(keyboardToolbarElement.getAttribute("data-keyboardheight")) || (window.outerHeight / 2 - 42);
+        console.log(keyboardH, window.innerHeight, cellRect.bottom);
+        if (cellRect.bottom > window.innerHeight - keyboardH - 42) {
+            contentElement.scrollTop += cellRect.bottom - window.innerHeight + 42 + keyboardH;
+        } else if (cellRect.top < 110) {
+            contentElement.scrollTop -= 110 - cellRect.top;
+        }
+    }
+    /// #else
     if (!blockElement.querySelector(".av__header")) {
         // 属性面板
         return;
@@ -308,6 +349,7 @@ export const cellScrollIntoView = (blockElement: HTMLElement, cellElement: Eleme
             }
         }
     }
+    /// #endif
 };
 
 export const getTypeByCellElement = (cellElement: Element) => {
@@ -337,13 +379,7 @@ export const popTextCell = (protyle: IProtyle, cellElements: HTMLElement[], type
     }
     let cellRect = cellElements[0].getBoundingClientRect();
     const contentElement = hasClosestByClassName(blockElement, "protyle-content", true);
-    /// #if MOBILE
-    if (contentElement) {
-        contentElement.scrollTop = contentElement.scrollTop + cellRect.top - 110;
-    }
-    /// #else
     cellScrollIntoView(blockElement, cellElements[0], false);
-    /// #endif
     cellRect = cellElements[0].getBoundingClientRect();
     let html = "";
     let height = cellRect.height;
@@ -435,6 +471,9 @@ export const popTextCell = (protyle: IProtyle, cellElements: HTMLElement[], type
             if (event.isComposing) {
                 return;
             }
+            if (electronUndo(event)) {
+                return;
+            }
             if (event.key === "Escape" || event.key === "Tab" ||
                 (event.key === "Enter" && !event.shiftKey && isNotCtrl(event))) {
                 updateCellValueByInput(protyle, type, blockElement, cellElements);
@@ -466,6 +505,14 @@ export const popTextCell = (protyle: IProtyle, cellElements: HTMLElement[], type
     });
     avMaskElement.addEventListener("contextmenu", (event) => {
         removeAvMask(event);
+    });
+    avMaskElement.addEventListener("mousedown", (event: MouseEvent & { target: HTMLElement }) => {
+        if (event.button === 1) {
+            if (event.target.classList.contains("av__mask") && document.activeElement && document.activeElement.nodeType === 1) {
+                (document.activeElement as HTMLElement).blur();
+            }
+            removeAvMask(event);
+        }
     });
 };
 
@@ -589,6 +636,10 @@ export const updateCellsValue = (protyle: IProtyle, nodeElement: HTMLElement, va
                         }
                     }
                 }
+                // https://github.com/siyuan-note/siyuan/issues/12308
+                if (!link) {
+                    name = value;
+                }
                 if (!link && !name && !imgSrc) {
                     return;
                 }
@@ -697,6 +748,8 @@ export const renderCellAttr = (cellElement: Element, value: IAVCellValue) => {
         }
         if (value.isDetached) {
             cellElement.setAttribute("data-detached", "true");
+        } else {
+            cellElement.removeAttribute("data-detached");
         }
     }
 };
@@ -758,7 +811,7 @@ export const renderCell = (cellValue: IAVCellValue, rowIndex = 0) => {
         cellValue?.rollup?.contents?.forEach((item) => {
             const rollupText = ["select", "mSelect", "mAsset", "checkbox", "relation"].includes(item.type) ? renderCell(item) : renderRollup(item);
             if (rollupText) {
-                text += rollupText + ", ";
+                text += rollupText + " ";
             }
         });
         if (text && text.endsWith(", ")) {
@@ -767,7 +820,7 @@ export const renderCell = (cellValue: IAVCellValue, rowIndex = 0) => {
     } else if (cellValue.type === "relation") {
         cellValue?.relation?.contents?.forEach((item) => {
             if (item && item.block) {
-                text += renderRollup(item) + ", ";
+                text += renderRollup(item) + " ";
             }
         });
         if (text && text.endsWith(", ")) {

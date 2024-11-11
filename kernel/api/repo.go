@@ -42,7 +42,7 @@ func getRepoFile(c *gin.Context) {
 
 	id := arg["id"].(string)
 	data, p, err := model.GetRepoFile(id)
-	if nil != err {
+	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
 		return
@@ -70,17 +70,18 @@ func openRepoSnapshotDoc(c *gin.Context) {
 	}
 
 	id := arg["id"].(string)
-	content, isProtyleDoc, updated, err := model.OpenRepoSnapshotDoc(id)
-	if nil != err {
+	title, content, displayInText, updated, err := model.OpenRepoSnapshotDoc(id)
+	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
 		return
 	}
 
 	ret.Data = map[string]interface{}{
-		"content":      content,
-		"isProtyleDoc": isProtyleDoc,
-		"updated":      updated,
+		"title":         title,
+		"content":       content,
+		"displayInText": displayInText,
+		"updated":       updated,
 	}
 }
 
@@ -96,7 +97,7 @@ func diffRepoSnapshots(c *gin.Context) {
 	left := arg["left"].(string)
 	right := arg["right"].(string)
 	diff, err := model.DiffRepoSnapshots(left, right)
-	if nil != err {
+	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
 		return
@@ -117,7 +118,7 @@ func getCloudSpace(c *gin.Context) {
 	defer c.JSON(http.StatusOK, ret)
 
 	sync, backup, hSize, hAssetSize, hTotalSize, exchangeSize, hTrafficUploadSize, hTrafficDownloadSize, htrafficAPIGet, hTrafficAPIPut, err := model.GetCloudSpace()
-	if nil != err {
+	if err != nil {
 		ret.Code = 1
 		ret.Msg = err.Error()
 		util.PushErrMsg(err.Error(), 3000)
@@ -162,7 +163,7 @@ func downloadCloudSnapshot(c *gin.Context) {
 
 	id := arg["id"].(string)
 	tag := arg["tag"].(string)
-	if err := model.DownloadCloudSnapshot(tag, id); nil != err {
+	if err := model.DownloadCloudSnapshot(tag, id); err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
 		return
@@ -180,7 +181,7 @@ func uploadCloudSnapshot(c *gin.Context) {
 
 	id := arg["id"].(string)
 	tag := arg["tag"].(string)
-	if err := model.UploadCloudSnapshot(tag, id); nil != err {
+	if err := model.UploadCloudSnapshot(tag, id); err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
 		return
@@ -198,7 +199,7 @@ func getRepoSnapshots(c *gin.Context) {
 
 	page := arg["page"].(float64)
 	snapshots, pageCount, totalCount, err := model.GetRepoSnapshots(int(page))
-	if nil != err {
+	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
 		return
@@ -222,7 +223,7 @@ func getCloudRepoSnapshots(c *gin.Context) {
 	page := int(arg["page"].(float64))
 
 	snapshots, pageCount, totalCount, err := model.GetCloudRepoSnapshots(page)
-	if nil != err {
+	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
 		return
@@ -240,7 +241,7 @@ func getCloudRepoTagSnapshots(c *gin.Context) {
 	defer c.JSON(http.StatusOK, ret)
 
 	snapshots, err := model.GetCloudRepoTagSnapshots()
-	if nil != err {
+	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
 		return
@@ -262,7 +263,7 @@ func removeCloudRepoTagSnapshot(c *gin.Context) {
 
 	tag := arg["tag"].(string)
 	err := model.RemoveCloudRepoTag(tag)
-	if nil != err {
+	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
 		return
@@ -274,7 +275,7 @@ func getRepoTagSnapshots(c *gin.Context) {
 	defer c.JSON(http.StatusOK, ret)
 
 	snapshots, err := model.GetTagSnapshots()
-	if nil != err {
+	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
 		return
@@ -296,7 +297,7 @@ func removeRepoTagSnapshot(c *gin.Context) {
 
 	tag := arg["tag"].(string)
 	err := model.RemoveTagSnapshot(tag)
-	if nil != err {
+	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
 		return
@@ -313,7 +314,7 @@ func createSnapshot(c *gin.Context) {
 	}
 
 	memo := arg["memo"].(string)
-	if err := model.IndexRepo(memo); nil != err {
+	if err := model.IndexRepo(memo); err != nil {
 		ret.Code = -1
 		ret.Msg = fmt.Sprintf(model.Conf.Language(140), err)
 		ret.Data = map[string]interface{}{"closeTimeout": 5000}
@@ -332,7 +333,7 @@ func tagSnapshot(c *gin.Context) {
 
 	id := arg["id"].(string)
 	name := arg["name"].(string)
-	if err := model.TagSnapshot(id, name); nil != err {
+	if err := model.TagSnapshot(id, name); err != nil {
 		ret.Code = -1
 		ret.Msg = fmt.Sprintf(model.Conf.Language(140), err)
 		ret.Data = map[string]interface{}{"closeTimeout": 5000}
@@ -350,11 +351,16 @@ func importRepoKey(c *gin.Context) {
 	}
 
 	base64Key := arg["key"].(string)
-	if err := model.ImportRepoKey(base64Key); nil != err {
+	retKey, err := model.ImportRepoKey(base64Key)
+	if err != nil {
 		ret.Code = -1
 		ret.Msg = fmt.Sprintf(model.Conf.Language(137), err)
 		ret.Data = map[string]interface{}{"closeTimeout": 5000}
 		return
+	}
+
+	ret.Data = map[string]interface{}{
+		"key": retKey,
 	}
 }
 
@@ -368,7 +374,7 @@ func initRepoKeyFromPassphrase(c *gin.Context) {
 	}
 
 	pass := arg["pass"].(string)
-	if err := model.InitRepoKeyFromPassphrase(pass); nil != err {
+	if err := model.InitRepoKeyFromPassphrase(pass); err != nil {
 		ret.Code = -1
 		ret.Msg = fmt.Sprintf(model.Conf.Language(137), err)
 		ret.Data = map[string]interface{}{"closeTimeout": 5000}
@@ -384,7 +390,7 @@ func initRepoKey(c *gin.Context) {
 	ret := gulu.Ret.NewResult()
 	defer c.JSON(http.StatusOK, ret)
 
-	if err := model.InitRepoKey(); nil != err {
+	if err := model.InitRepoKey(); err != nil {
 		ret.Code = -1
 		ret.Msg = fmt.Sprintf(model.Conf.Language(137), err)
 		ret.Data = map[string]interface{}{"closeTimeout": 5000}
@@ -400,7 +406,7 @@ func resetRepo(c *gin.Context) {
 	ret := gulu.Ret.NewResult()
 	defer c.JSON(http.StatusOK, ret)
 
-	if err := model.ResetRepo(); nil != err {
+	if err := model.ResetRepo(); err != nil {
 		ret.Code = -1
 		ret.Msg = fmt.Sprintf(model.Conf.Language(146), err.Error())
 		ret.Data = map[string]interface{}{"closeTimeout": 5000}
@@ -412,7 +418,7 @@ func purgeRepo(c *gin.Context) {
 	ret := gulu.Ret.NewResult()
 	defer c.JSON(http.StatusOK, ret)
 
-	if err := model.PurgeRepo(); nil != err {
+	if err := model.PurgeRepo(); err != nil {
 		ret.Code = -1
 		ret.Msg = fmt.Sprintf(model.Conf.Language(201), err.Error())
 		ret.Data = map[string]interface{}{"closeTimeout": 5000}
@@ -424,7 +430,7 @@ func purgeCloudRepo(c *gin.Context) {
 	ret := gulu.Ret.NewResult()
 	defer c.JSON(http.StatusOK, ret)
 
-	if err := model.PurgeCloud(); nil != err {
+	if err := model.PurgeCloud(); err != nil {
 		ret.Code = -1
 		ret.Msg = fmt.Sprintf(model.Conf.Language(201), err.Error())
 		ret.Data = map[string]interface{}{"closeTimeout": 5000}

@@ -2,7 +2,13 @@ import {hasClosestBlock, hasClosestByAttribute, hasClosestByClassName, hasCloses
 import * as dayjs from "dayjs";
 import {transaction, updateTransaction} from "../wysiwyg/transaction";
 import {getContenteditableElement} from "../wysiwyg/getBlock";
-import {fixTableRange, focusBlock, focusByWbr, getEditorRange} from "./selection";
+import {
+    fixTableRange,
+    focusBlock,
+    focusByWbr,
+    getEditorRange,
+    getSelectionOffset, setLastNodeRange,
+} from "./selection";
 import {Constants} from "../../constants";
 import {highlightRender} from "../render/highlightRender";
 import {scrollCenter} from "../../util/highlightById";
@@ -167,6 +173,11 @@ const processAV = (range: Range, html: string, protyle: IProtyle, blockElement: 
                     nextID: previousID,
                     isDetached: selectCellElement.dataset.detached === "true",
                 }]);
+                updateAttrViewCellAnimation(selectCellElement, {
+                    type: "block",
+                    isDetached: false,
+                    block: {content: contenteditableElement.firstElementChild.textContent, id: sourceId}
+                });
                 return;
             }
         }
@@ -179,6 +190,7 @@ const processAV = (range: Range, html: string, protyle: IProtyle, blockElement: 
             updateCellsValue(protyle, blockElement as HTMLElement, text, undefined, columns, html);
         } else if (cellsElement.length > 0) {
             updateCellsValue(protyle, blockElement as HTMLElement, text, cellsElement, columns, html);
+            document.querySelector(".av__panel")?.remove();
         } else if (hasClosestByClassName(range.startContainer, "av__title")) {
             range.insertNode(document.createTextNode(text));
             range.collapse(false);
@@ -187,9 +199,44 @@ const processAV = (range: Range, html: string, protyle: IProtyle, blockElement: 
     });
 };
 
+const processTable = (range: Range, html: string, protyle: IProtyle, blockElement: HTMLElement) => {
+    const tempElement = document.createElement("template");
+    tempElement.innerHTML = html;
+    const copyCellElements = tempElement.content.querySelectorAll("th, td");
+    if (copyCellElements.length === 0) {
+        return false;
+    }
+    const scrollLeft = blockElement.firstElementChild.scrollLeft;
+    const tableSelectElement = blockElement.querySelector(".table__select") as HTMLElement;
+    let index = 0;
+    const matchCellsElement: HTMLTableCellElement[] = [];
+    blockElement.querySelectorAll("th, td").forEach((item: HTMLTableCellElement) => {
+        if (!item.classList.contains("fn__none") &&
+            item.offsetLeft + 6 > tableSelectElement.offsetLeft + scrollLeft && item.offsetLeft + item.clientWidth - 6 < tableSelectElement.offsetLeft + scrollLeft + tableSelectElement.clientWidth &&
+            item.offsetTop + 6 > tableSelectElement.offsetTop && item.offsetTop + item.clientHeight - 6 < tableSelectElement.offsetTop + tableSelectElement.clientHeight &&
+            copyCellElements.length > index) {
+            matchCellsElement.push(item);
+            index++;
+        }
+    });
+    tableSelectElement.removeAttribute("style");
+    const oldHTML = blockElement.outerHTML;
+    blockElement.setAttribute("updated", dayjs().format("YYYYMMDDHHmmss"));
+    matchCellsElement.forEach((item, matchIndex) => {
+        item.innerHTML = copyCellElements[matchIndex].innerHTML;
+        if (matchIndex === matchCellsElement.length - 1) {
+            setLastNodeRange(item, range, false);
+        }
+    });
+    range.collapse(false);
+    updateTransaction(protyle, blockElement.getAttribute("data-node-id"), blockElement.outerHTML, oldHTML);
+    return true;
+};
+
 export const insertHTML = (html: string, protyle: IProtyle, isBlock = false,
                            // 移动端插入嵌入块时，获取到的 range 为旧值
-                           useProtyleRange = false) => {
+                           useProtyleRange = false,
+                           insertByCursor = false) => {
     if (html === "") {
         return;
     }
@@ -204,13 +251,13 @@ export const insertHTML = (html: string, protyle: IProtyle, isBlock = false,
             isBlock = true;
         }
     }
-    let blockElement = hasClosestBlock(range.startContainer) as Element;
+    let blockElement = hasClosestBlock(range.startContainer) as HTMLElement;
     if (!blockElement) {
         // 使用鼠标点击选则模版提示列表后 range 丢失
         if (protyle.toolbar.range) {
-            blockElement = hasClosestBlock(protyle.toolbar.range.startContainer) as Element;
+            blockElement = hasClosestBlock(protyle.toolbar.range.startContainer) as HTMLElement;
         } else {
-            blockElement = protyle.wysiwyg.element.firstElementChild as Element;
+            blockElement = protyle.wysiwyg.element.firstElementChild as HTMLElement;
         }
     }
     if (!blockElement) {
@@ -219,6 +266,10 @@ export const insertHTML = (html: string, protyle: IProtyle, isBlock = false,
     if (blockElement.classList.contains("av")) {
         range.deleteContents();
         processAV(range, html, protyle, blockElement as HTMLElement);
+        return;
+    }
+    if (blockElement.classList.contains("table") && blockElement.querySelector(".table__select").clientWidth > 0 &&
+        processTable(range, html, protyle, blockElement)) {
         return;
     }
     let id = blockElement.getAttribute("data-node-id");
@@ -232,7 +283,7 @@ export const insertHTML = (html: string, protyle: IProtyle, isBlock = false,
         range.collapse(false);
         range.insertNode(document.createElement("wbr"));
         if (isNodeCodeBlock) {
-            getContenteditableElement(blockElement).removeAttribute("data-render");
+            blockElement.querySelector('[data-render="true"]')?.removeAttribute("data-render");
             highlightRender(blockElement);
         } else {
             focusByWbr(blockElement, range);
@@ -331,7 +382,14 @@ export const insertHTML = (html: string, protyle: IProtyle, isBlock = false,
         }
     }
     let lastElement: Element;
-    Array.from(tempElement.content.children).reverse().forEach((item) => {
+    let insertBefore = false;
+    if (!range.toString() && insertByCursor) {
+        const positon = getSelectionOffset(blockElement, protyle.wysiwyg.element, range);
+        if (positon.start === 0 && editableElement.textContent !== "") {
+            insertBefore = true;
+        }
+    }
+    (insertBefore ? Array.from(tempElement.content.children) : Array.from(tempElement.content.children).reverse()).forEach((item) => {
         let addId = item.getAttribute("data-node-id");
         if (addId === id) {
             doOperation.push({
@@ -361,14 +419,19 @@ export const insertHTML = (html: string, protyle: IProtyle, isBlock = false,
                 action: "insert",
                 data: item.outerHTML,
                 id: addId,
-                previousID: id
+                nextID: insertBefore ? id : undefined,
+                previousID: insertBefore ? undefined : id
             });
             undoOperation.push({
                 action: "delete",
                 id: addId,
             });
         }
-        blockElement.after(item);
+        if (insertBefore) {
+            blockElement.before(item);
+        } else {
+            blockElement.after(item);
+        }
         if (!lastElement) {
             lastElement = item;
         }

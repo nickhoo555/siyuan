@@ -19,12 +19,41 @@ package api
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/88250/gulu"
 	"github.com/gin-gonic/gin"
 	"github.com/siyuan-note/siyuan/kernel/model"
+	"github.com/siyuan-note/siyuan/kernel/treenode"
 	"github.com/siyuan-note/siyuan/kernel/util"
 )
+
+func getNotebookInfo(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	boxID := arg["notebook"].(string)
+	if util.InvalidIDPattern(boxID, ret) {
+		return
+	}
+
+	box := model.Conf.Box(boxID)
+	if nil == box {
+		ret.Code = -1
+		ret.Msg = "notebook [" + boxID + "] not found"
+		return
+	}
+
+	boxInfo := box.GetInfo()
+	ret.Data = map[string]interface{}{
+		"boxInfo": boxInfo,
+	}
+}
 
 func setNotebookIcon(c *gin.Context) {
 	ret := gulu.Ret.NewResult()
@@ -73,7 +102,7 @@ func renameNotebook(c *gin.Context) {
 
 	name := arg["name"].(string)
 	err := model.RenameBox(notebook, name)
-	if nil != err {
+	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
 		ret.Data = map[string]interface{}{"closeTimeout": 5000}
@@ -110,7 +139,7 @@ func removeNotebook(c *gin.Context) {
 	}
 
 	err := model.RemoveBox(notebook)
-	if nil != err {
+	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
 		return
@@ -135,14 +164,14 @@ func createNotebook(c *gin.Context) {
 
 	name := arg["name"].(string)
 	id, err := model.CreateBox(name)
-	if nil != err {
+	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
 		return
 	}
 
 	existed, err := model.Mount(id)
-	if nil != err {
+	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
 		return
@@ -202,7 +231,7 @@ func openNotebook(c *gin.Context) {
 	msgId := util.PushMsg(model.Conf.Language(45), 1000*60*15)
 	defer util.PushClearMsg(msgId)
 	existed, err := model.Mount(notebook)
-	if nil != err {
+	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
 		return
@@ -222,6 +251,35 @@ func openNotebook(c *gin.Context) {
 	}
 	evt.Callback = arg["callback"]
 	util.PushEvent(evt)
+
+	if isUserGuide {
+		appArg := arg["app"]
+		app := ""
+		if nil != appArg {
+			app = appArg.(string)
+		}
+
+		go func() {
+			var startID string
+			i := 0
+			for ; i < 70; i++ {
+				time.Sleep(100 * time.Millisecond)
+				guideStartID := map[string]string{
+					"20210808180117-czj9bvb": "20200812220555-lj3enxa",
+					"20211226090932-5lcq56f": "20211226115423-d5z1joq",
+					"20210808180117-6v0mkxr": "20200923234011-ieuun1p",
+					"20240530133126-axarxgx": "20240530101000-4qitucx",
+				}
+				startID = guideStartID[notebook]
+				if treenode.ExistBlockTree(startID) {
+					util.BroadcastByTypeAndApp("main", app, "openFileById", 0, "", map[string]interface{}{
+						"id": startID,
+					})
+					break
+				}
+			}
+		}()
+	}
 }
 
 func closeNotebook(c *gin.Context) {
@@ -290,14 +348,14 @@ func setNotebookConf(c *gin.Context) {
 	}
 
 	param, err := gulu.JSON.MarshalJSON(arg["conf"])
-	if nil != err {
+	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
 		return
 	}
 
 	boxConf := box.GetConf()
-	if err = gulu.JSON.UnmarshalJSON(param, boxConf); nil != err {
+	if err = gulu.JSON.UnmarshalJSON(param, boxConf); err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
 		return
@@ -346,7 +404,7 @@ func lsNotebooks(c *gin.Context) {
 
 	// 兼容旧版接口，不能直接使用 util.JsonArg()
 	arg := map[string]interface{}{}
-	if err := c.ShouldBindJSON(&arg); nil == err {
+	if err := c.ShouldBindJSON(&arg); err == nil {
 		if arg["flashcard"] != nil {
 			flashcard = arg["flashcard"].(bool)
 		}
@@ -358,7 +416,7 @@ func lsNotebooks(c *gin.Context) {
 	} else {
 		var err error
 		notebooks, err = model.ListNotebooks()
-		if nil != err {
+		if err != nil {
 			return
 		}
 	}

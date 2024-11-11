@@ -51,7 +51,11 @@ func getBackmentionDoc(c *gin.Context) {
 	defID := arg["defID"].(string)
 	refTreeID := arg["refTreeID"].(string)
 	keyword := arg["keyword"].(string)
-	backlinks := model.GetBackmentionDoc(defID, refTreeID, keyword)
+	containChildren := model.Conf.Editor.BacklinkContainChildren
+	if val, ok := arg["containChildren"]; ok {
+		containChildren = val.(bool)
+	}
+	backlinks := model.GetBackmentionDoc(defID, refTreeID, keyword, containChildren)
 	ret.Data = map[string]interface{}{
 		"backmentions": backlinks,
 	}
@@ -69,7 +73,11 @@ func getBacklinkDoc(c *gin.Context) {
 	defID := arg["defID"].(string)
 	refTreeID := arg["refTreeID"].(string)
 	keyword := arg["keyword"].(string)
-	backlinks := model.GetBacklinkDoc(defID, refTreeID, keyword)
+	containChildren := model.Conf.Editor.BacklinkContainChildren
+	if val, ok := arg["containChildren"]; ok {
+		containChildren = val.(bool)
+	}
+	backlinks := model.GetBacklinkDoc(defID, refTreeID, keyword, containChildren)
 	ret.Data = map[string]interface{}{
 		"backlinks": backlinks,
 	}
@@ -101,7 +109,11 @@ func getBacklink2(c *gin.Context) {
 	if nil != mentionSortArg {
 		mentionSort, _ = strconv.Atoi(mentionSortArg.(string))
 	}
-	boxID, backlinks, backmentions, linkRefsCount, mentionsCount := model.GetBacklink2(id, keyword, mentionKeyword, sort, mentionSort)
+	containChildren := model.Conf.Editor.BacklinkContainChildren
+	if val, ok := arg["containChildren"]; ok {
+		containChildren = val.(bool)
+	}
+	boxID, backlinks, backmentions, linkRefsCount, mentionsCount := model.GetBacklink2(id, keyword, mentionKeyword, sort, mentionSort, containChildren)
 	ret.Data = map[string]interface{}{
 		"backlinks":     backlinks,
 		"linkRefsCount": linkRefsCount,
@@ -133,7 +145,11 @@ func getBacklink(c *gin.Context) {
 	if nil != arg["beforeLen"] {
 		beforeLen = int(arg["beforeLen"].(float64))
 	}
-	boxID, backlinks, backmentions, linkRefsCount, mentionsCount := model.GetBacklink(id, keyword, mentionKeyword, beforeLen)
+	containChildren := model.Conf.Editor.BacklinkContainChildren
+	if val, ok := arg["containChildren"]; ok {
+		containChildren = val.(bool)
+	}
+	boxID, backlinks, backmentions, linkRefsCount, mentionsCount := model.GetBacklink(id, keyword, mentionKeyword, beforeLen, containChildren)
 	ret.Data = map[string]interface{}{
 		"backlinks":     backlinks,
 		"linkRefsCount": linkRefsCount,

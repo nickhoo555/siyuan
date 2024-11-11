@@ -47,6 +47,7 @@ import {linkMenu} from "../../menus/protyle";
 import {addScript} from "../util/addScript";
 import {confirmDialog} from "../../dialog/confirmDialog";
 import {pasteAsPlainText, pasteEscaped, pasteText} from "../util/paste";
+import {escapeHtml} from "../../util/escape";
 
 export class Toolbar {
     public element: HTMLElement;
@@ -82,20 +83,19 @@ export class Toolbar {
             return;
         }
         // https://github.com/siyuan-note/siyuan/issues/5157
-        let hasImg = true;
-        let noText = true;
+        let hasText = false;
         Array.from(range.cloneContents().childNodes).find(item => {
-            if (item.nodeType !== 1) {
-                if (item.textContent.length > 0) {
-                    noText = false;
+            // zwsp 不显示工具栏
+            if (item.textContent.length > 0 && item.textContent !== Constants.ZWSP) {
+                if (item.nodeType === 1 && (item as HTMLElement).classList.contains("img")) {
+                    // 图片不显示工具栏
+                } else {
+                    hasText = true;
                     return true;
                 }
-            } else if (!(item as HTMLElement).classList.contains("img")) {
-                hasImg = false;
-                return true;
             }
         });
-        if ((hasImg && noText) ||
+        if (!hasText ||
             // 拖拽图片到最右侧
             (range.commonAncestorContainer.nodeType !== 3 && (range.commonAncestorContainer as HTMLElement).classList.contains("img"))) {
             this.element.classList.add("fn__none");
@@ -277,6 +277,12 @@ export class Toolbar {
             this.range = setLastNodeRange(getContenteditableElement(nodeElement), this.range, false);
         }
         const rangeTypes = this.getCurrentType(this.range);
+
+        // https://github.com/siyuan-note/siyuan/issues/6501
+        // https://github.com/siyuan-note/siyuan/issues/12877
+        if (rangeTypes.length === 1 && ["block-ref", "file-annotation-ref", "a", "inline-memo", "inline-math", "tag"].includes(rangeTypes[0]) && type === "clear") {
+            return;
+        }
         const selectText = this.range.toString();
         fixTableRange(this.range);
         let previousElement: HTMLElement;
@@ -369,7 +375,11 @@ export class Toolbar {
                 }
             }
             contents.childNodes.forEach((item: HTMLElement, index) => {
-                if (item.nodeType !== 3 && item.tagName !== "BR" && item.tagName !== "IMG") {
+                if (item.nodeType !== 3 && item.tagName !== "BR" && item.tagName !== "IMG" && !item.classList.contains("img")) {
+                    // 图片后有粗体，仅选中图片后，rang 中会包含一个空的粗体，需移除
+                    if (item.textContent === "") {
+                        return;
+                    }
                     const types = (item.getAttribute("data-type") || "").split(" ");
                     if (type === "clear") {
                         for (let i = 0; i < types.length; i++) {
@@ -483,12 +493,22 @@ export class Toolbar {
                             hasSameTextStyle(item, nextElement, textObj)) {
                             nextIndex = item.textContent.length;
                             nextElement.innerHTML = item.textContent + nextElement.innerHTML;
-                        } else {
+                        } else if (
+                            // 图片会有零宽空格，但图片不进行处理 https://github.com/siyuan-note/siyuan/issues/12840
+                            item.textContent !== Constants.ZWSP ||
+                            // tag 会有零宽空格 https://github.com/siyuan-note/siyuan/issues/12922
+                            (item.textContent === Constants.ZWSP && !rangeTypes.includes("img"))) {
                             const inlineElement = document.createElement("span");
                             inlineElement.setAttribute("data-type", type);
                             inlineElement.textContent = item.textContent;
                             setFontStyle(inlineElement, textObj);
-                            newNodes.push(inlineElement);
+                            if (type === "text" && !inlineElement.getAttribute("style")) {
+                                newNodes.push(item);
+                            } else {
+                                newNodes.push(inlineElement);
+                            }
+                        } else {
+                            newNodes.push(item);
                         }
                     } else {
                         let types = (item.getAttribute("data-type") || "").split(" ");
@@ -499,7 +519,9 @@ export class Toolbar {
                                 i--;
                             }
                         }
-                        types.push(type);
+                        if (!types.includes("img")) {
+                            types.push(type);
+                        }
                         // 上标和下标不能同时存在 https://github.com/siyuan-note/insider/issues/1049
                         if (type === "sub" && types.includes("sup")) {
                             types.find((item, index) => {
@@ -573,7 +595,18 @@ export class Toolbar {
                         } else if (item.tagName !== "BR" && item.tagName !== "IMG") {
                             item.setAttribute("data-type", types.join(" "));
                             setFontStyle(item, textObj);
-                            newNodes.push(item);
+                            if (types.includes("text") && !item.getAttribute("style")) {
+                                if (types.length === 1) {
+                                    const tempText = document.createTextNode(item.textContent);
+                                    newNodes.push(tempText);
+                                } else {
+                                    types.splice(types.indexOf("text"), 1);
+                                    item.setAttribute("data-type", types.join(" "));
+                                    newNodes.push(item);
+                                }
+                            } else {
+                                newNodes.push(item);
+                            }
                         } else {
                             newNodes.push(item);
                         }
@@ -599,9 +632,12 @@ export class Toolbar {
         for (let i = 0; i < newNodes.length; i++) {
             const currentNewNode = newNodes[i] as HTMLElement;
             const nextNewNode = newNodes[i + 1] as HTMLElement;
+            const currentType = currentNewNode.nodeType !== 3 ? (currentNewNode.getAttribute("data-type") || "") : "";
             if (currentNewNode.nodeType !== 3 && nextNewNode && nextNewNode.nodeType !== 3 &&
                 nextNewNode.tagName === currentNewNode.tagName &&
-                isArrayEqual((nextNewNode.getAttribute("data-type") || "").split(" "), (currentNewNode.getAttribute("data-type") || "").split(" ")) &&
+                // 表格内多个换行 https://github.com/siyuan-note/siyuan/issues/12300
+                currentNewNode.tagName !== "BR" &&
+                isArrayEqual((nextNewNode.getAttribute("data-type") || "").split(" "), currentType.split(" ")) &&
                 currentNewNode.getAttribute("data-id") === nextNewNode.getAttribute("data-id") &&
                 currentNewNode.getAttribute("data-subtype") === nextNewNode.getAttribute("data-subtype") &&
                 currentNewNode.style.color === nextNewNode.style.color &&
@@ -611,7 +647,6 @@ export class Toolbar {
                 currentNewNode.style.fontSize === nextNewNode.style.fontSize &&
                 currentNewNode.style.backgroundColor === nextNewNode.style.backgroundColor) {
                 // 合并相同的 node
-                const currentType = currentNewNode.getAttribute("data-type");
                 if (currentType.indexOf("inline-math") > -1) {
                     // 数学公式合并 data-content https://github.com/siyuan-note/siyuan/issues/6028
                     nextNewNode.setAttribute("data-content", currentNewNode.getAttribute("data-content") + nextNewNode.getAttribute("data-content"));
@@ -877,7 +912,7 @@ export class Toolbar {
     <span class="fn__space"></span>
     <button data-type="pin" class="block__icon block__icon--show b3-tooltips b3-tooltips__nw" aria-label="${isPin ? window.siyuan.languages.unpin : window.siyuan.languages.pin}"><svg><use xlink:href="#icon${isPin ? "Unpin" : "Pin"}"></use></svg></button>
     <span class="fn__space"></span>
-    <button data-type="close" class="block__icon block__icon--show b3-tooltips b3-tooltips__nw" aria-label="${window.siyuan.languages.close}"><svg style="width: 10px"><use xlink:href="#iconClose"></use></svg></button>
+    <button data-type="close" class="block__icon block__icon--show b3-tooltips b3-tooltips__nw" aria-label="${window.siyuan.languages.close}"><svg style="width: 10px;margin: 0 2px;"><use xlink:href="#iconClose"></use></svg></button>
 </div>
 <textarea ${protyle.disabled ? " readonly" : ""} spellcheck="false" class="b3-text-field b3-text-field--text fn__block" placeholder="${placeholder}" style="${isMobile() ? "" : "width:" + Math.max(480, renderElement.clientWidth * 0.7) + "px"};max-height:calc(80vh - 44px);min-height: 48px;min-width: 268px;border-radius: 0 0 var(--b3-border-radius-b) var(--b3-border-radius-b);font-family: var(--b3-font-family-code);"></textarea></div>`;
         const autoHeight = () => {
@@ -1177,15 +1212,19 @@ export class Toolbar {
         protyle.app.plugins.forEach(item => {
             item.eventBus.emit("open-noneditableblock", {
                 protyle,
-                toolbar: this
+                toolbar: this,
+                blockElement: nodeElement,
+                renderElement,
             });
         });
     }
 
     private updateLanguage(languageElement: HTMLElement, protyle: IProtyle, id: string, nodeElement: HTMLElement, oldHtml: string, selectedLang: string) {
         languageElement.textContent = selectedLang === window.siyuan.languages.clear ? "" : selectedLang;
-        window.siyuan.storage[Constants.LOCAL_CODELANG] = languageElement.textContent;
-        setStorageVal(Constants.LOCAL_CODELANG, window.siyuan.storage[Constants.LOCAL_CODELANG]);
+        if (!Constants.SIYUAN_RENDER_CODE_LANGUAGES.includes(languageElement.textContent)) {
+            window.siyuan.storage[Constants.LOCAL_CODELANG] = languageElement.textContent;
+            setStorageVal(Constants.LOCAL_CODELANG, window.siyuan.storage[Constants.LOCAL_CODELANG]);
+        }
         const editElement = getContenteditableElement(nodeElement);
         if (Constants.SIYUAN_RENDER_CODE_LANGUAGES.includes(languageElement.textContent)) {
             nodeElement.dataset.content = editElement.textContent.trim();
@@ -1194,14 +1233,8 @@ export class Toolbar {
             nodeElement.innerHTML = `<div spin="1"></div><div class="protyle-attr" contenteditable="false">${Constants.ZWSP}</div>`;
             processRender(nodeElement);
         } else {
-            const lineNumber = nodeElement.getAttribute("linenumber");
-            if (lineNumber === "true" || (lineNumber !== "false" && window.siyuan.config.editor.codeSyntaxHighlightLineNum)) {
-                editElement.classList.add("protyle-linenumber");
-            } else {
-                editElement.classList.remove("protyle-linenumber");
-            }
             (editElement as HTMLElement).textContent = editElement.textContent;
-            editElement.removeAttribute("data-render");
+            editElement.parentElement.removeAttribute("data-render");
             highlightRender(nodeElement);
         }
         nodeElement.setAttribute("updated", dayjs().format("YYYYMMDDHHmmss"));
@@ -1283,7 +1316,7 @@ export class Toolbar {
                 html += `<div class="b3-list-item">${item.replace(lowerCaseValue, "<b>" + lowerCaseValue + "</b>")}</div>`;
             });
             if (inputElement.value.trim() && !matchInput) {
-                html = `<div class="b3-list-item"><b>${inputElement.value.replace(/`| /g, "_")}</b></div>${html}`;
+                html = `<div class="b3-list-item"><b>${escapeHtml(inputElement.value.replace(/`| /g, "_"))}</b></div>${html}`;
             }
             html = `<div class="b3-list-item">${window.siyuan.languages.clear}</div>` + html;
             listElement.innerHTML = html;
